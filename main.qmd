@@ -21,6 +21,7 @@ reference-location: margin
 citation-location: margin   
 execute: 
     cache: true
+    warning: false
     fig-width: 16
     fig-height: 10
 ---
@@ -71,7 +72,8 @@ In this section, we want to find the approximate amount of per month
 expenditures that is needed for each person to get 2100 calories minimum required protein
 per day. We use the Ministry of Health recommended food bundle as can be seen in the picture
 below.
-![Bundle](Documents/bundle.jpg)
+
+![Bundle](Data/bundle.jpg)
 
 Note that for each commodity in the bundle, we first need to determine how many units per
 month a person needs, then find the unit price for urban/rural households and then multiply
@@ -652,6 +654,8 @@ provinces <- tribble(
 poverty_gap <- poverty_gap |>
     left_join(provinces, by = "province_id")
 
+write_rds(poverty_gap, file = "Data/PGI.rds")
+
 poverty_gap
 ```
 
@@ -864,56 +868,66 @@ gini_coefficient
 ## Map Poverty Indicators
 
 ```{r}
-# ohio_pop <- read.csv(file = "Data/ohio_pop.csv")
-# ohio_pop <- as_tibble(ohio_pop) |>
-#     select(name, population) |>
-#     mutate(population = gsub(",", "", population)) |>
-#     mutate(population = as.numeric(population))
-
 iran_shape <- st_read("Data/Iran/iran.shp")
 iran_shape <- st_transform(iran_shape, "+init=epsg:4326")
-# Filter only for Ohio
+poverty_gap <- read_rds("Data/PGI.rds")
 
-# Add population to shape file
-# ohioShapesLeaflet <- merge(x = iran_shape, y = ohio_pop, by.x = "namelsad", by.y = "name", all.x = TRUE)
+iran_shape <- merge(
+    x = iran_shape,
+    y = poverty_gap,
+    by.x = "name",
+    by.y = "name"
+)
 
 pal <- colorNumeric(
-    palette = "Blues",
-    domain = iran_shape$population
+    palette = "YlOrRd",
+    domain = iran_shape$pov_gap
 )
 ```
 
 ```{r}
-# Define UI for application
-ui <- fluidPage(
-    # Application title
-    titlePanel("Posit 182374"),
-    # Application layout
-    leafletOutput("ohio")
-)
+# # Define UI for application
+# ui <- fluidPage(
+#     # Application title
+#     titlePanel("Poverty Gap"),
+#     # Application layout
+#     leafletOutput("PGI")
+# )
+
+# # Define server logic
+# server <- function(input, output, session) {
+#     # render the map
+#     output$PGI <- renderLeaflet({
+#         leaflet() |>
+#             addTiles() |>
+#             addPolygons(
+#                 data = iran_shape,
+#                 stroke = FALSE,
+#                 smoothFactor = 0.2,
+#                 fillOpacity = 1,
+#                 color = ~ pal(pov_gap),
+#                 label = ~ paste0(name, ": ", pov_gap)
+#             )
+#     })
+# }
+
+# # Run the application 
+# shinyApp(ui = ui, server = server)
 ```
 
 ```{r}
-# Define server logic 
-server <- function(input, output, session) {
-    # render the map
-    output$ohio <- renderLeaflet({
-        leaflet() %>%
-            addTiles() %>% 
-            addPolygons(data = iran_shape,
-                        stroke = FALSE,
-                        smoothFactor = 0.2, 
-                        fillOpacity = 1,
-                        color = ~pal(population),
-                        label = ~paste0(Name_12, ": ", population)
-            )
-    })
-}
-```
+map <- leaflet() |>
+    addTiles() |>
+    addPolygons(
+        data = iran_shape,
+        stroke = FALSE,
+        smoothFactor = 0.2,
+        fillOpacity = 1,
+        color = ~ pal(pov_gap),
+        label = ~ paste0(name, ": ", pov_gap)
+    )
 
-```{r}
-# Run the application 
-shinyApp(ui = ui, server = server)
+map
 ```
 
 ## Map Inequality Indicators
@@ -1158,5 +1172,6 @@ write_rds(welfare, file = "Data/04_welfare-402.rds")
 
 # Remove from memory
 rm(heis, welfare)
+file.remove("Data/welfare-402.csv")
 ```
 
