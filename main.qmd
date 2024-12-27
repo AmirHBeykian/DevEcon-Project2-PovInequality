@@ -58,7 +58,7 @@ setwd(working_dir)
 # Load libraries
 library("tidyverse") # Used for most of the data manipulations
 library("ggplot2")   # Used for plotting
-library("haven")     # Used for importing .dta file
+# library("haven")     # Used for importing .dta file
 library("shiny")     # Used for creating interactive maps
 library("leaflet")   # Used for rendering maps and layers
 library("sf")        # Used for importing and transforming shape files
@@ -80,24 +80,23 @@ quantities and prices and sum over all to get a measure of minimum food expendit
 ```{r}
 # Import the food expenditures table that provide us with
 # commodity codes and unit prices
-exp_food <- read_dta("Data/02_exp_food.dta")
+exp_food <- read_rds("Data/02_exp_food.rds")
 
 # Import demographic information we need to classify
 # urban/rural status of the household
-demog <- read_dta("Data/00_demographic.dta")
+heis <- read_rds("Data/03_heis-402.rds")
 
 # Keep only one rwo for each household (the head)
-demog_head <- demog |>
-    filter(rel == 1) |>
+heis <- heis |>
     select(key, urban, weight_int)
 
 # Add urbanicity of each household to food expenditures table
-exp_food <- exp_food |>
-    left_join(demog_head, by = "key")
+heis <- heis |>
+    left_join(exp_food, by = "key")
 
 # Generate a table which shows the weighted average of price of 
 # each commodity per urbanicity status
-goods_prices <- exp_food |>
+goods_prices <- heis |>
     mutate(price = as.numeric(price)) |>
     group_by(code, urban) |>
     summarize(
@@ -239,7 +238,7 @@ prices <- goods_prices |>
 
 prices <- prices |>
     group_by(urban, food) |>
-    summarize(price = mean(price), .groups = "drop")
+    summarize(price = mean(average_price), .groups = "drop")
 
 prices |> filter(urban == 1)
 ```
@@ -265,8 +264,8 @@ min_expnd <- prices |>
 min_expnd
 ```
 
-[Rural] 2,019,399,0
-[Urban] 2,072,497,8
+[Rural] 2,055,539,1
+[Urban] 2,112,940,9
 
 Which means the absolute poverty line is about 2 Million Tomans per capita per month.
 
@@ -291,39 +290,12 @@ rm(
 )
 
 heis <- read_rds("Data/03_heis-402.rds")
-demog <- read_dta("Data/00_demographic.dta")
-```
-
-Calculate the weighted household size.
-
-```{r}
-hh_size <- demog |>
-    select(key, rel, age) |>
-    mutate(m_weight = case_when(
-        # If head of household, m_weight = 1
-        rel == 1 ~ 1,
-        # If not head and above 18, m_weight = 0.8
-        rel != 1 & age > 18 ~ 0.8,
-        # If non of them, m_weight = 0.5
-        TRUE ~ 0.5
-    )) |>
-    group_by(key) |>
-    # Sum of the m_weights for each memeber is household's weight
-    summarize(m_weight = sum(m_weight))
 ```
 
 ```{r}
-# Keep only one row for each household and it's urbainicity
-head_demo <- demog |>
-    filter(rel == 1) |>
-    select(key, urban)
-
-# Add urbanicity status to hh_size table
 heis <- heis |>
-    left_join(hh_size, by = "key") |>
     # Calculate weighted per capita expenditure
-    mutate(expd_pc = total_expd / m_weight) |>
-    left_join(head_demo, by = "key")
+    mutate(expd_pc = total_expd / m_weight)
 
 heis |>
     group_by(urban) |>
@@ -341,8 +313,8 @@ heis |>
     summarize(median_expd = quantile(expd_pc, probs = 0.25))
 ```
 
-[Rural] 1,396,923,1
-[Urban] 1,932,391,3
+[Rural] 1,986,428,6
+[Urban] 2,825,357,1
 
 ### Hybrid Approach
 
@@ -376,7 +348,7 @@ bottom_rural <- heis |>
 We then import food expenditures data and keep only the bottom 20% households.
 
 ```{r}
-exp_food <- read_dta("Data/02_exp_food.dta")
+exp_food <- read_rds("Data/02_exp_food.rds")
 
 exp_food_urban <- exp_food |>
     filter(key %in% bottom_urban$key)
@@ -456,14 +428,12 @@ Now similar to the Absolute Poverty Line section, we should find prices from the
 data and calculate minimum expenditures.
 
 ```{r}
-demog_head <- demog |>
-    filter(rel == 1) |>
-    select(key, urban, weight_int)
+heis <- read_rds("Data/03_heis-402.rds")
+heis <- heis |>
+    select(key, urban, weight_int) |>
+    left_join(exp_food, by = "key")
 
-exp_food <- exp_food |>
-    left_join(demog_head, by = "key")
-
-goods_prices <- exp_food |>
+goods_prices <- heis |>
     mutate(price = as.numeric(price)) |>
     filter(urban == 1) |>
     group_by(code) |>
@@ -547,7 +517,7 @@ Now similar to the Absolute Poverty Line section, we should find prices from the
 data and calculate minimum expenditures.
 
 ```{r}
-goods_prices <- exp_food |>
+goods_prices <- heis |>
     mutate(price = as.numeric(price)) |>
     filter(urban == 0) |>
     group_by(code) |>
@@ -600,7 +570,6 @@ rm(
 )
 
 heis <- read_rds("Data/03_heis-402.rds")
-demog <- read_dta("Data/00_demographic.dta")
 ```
 
 In this section, we calculate the poverty gap using the relative poverty line,
@@ -622,25 +591,13 @@ across all individuals in poverty. Note that we compare urban households with th
 urban poverty line, and respectively for rural households.
 
 ```{r}
-# Generate sum of weigths for each household.
-hh_size <- demog |>
-    select(key, rel, age) |>
-    mutate(m_weight = case_when(
-        rel == 1 ~ 1,
-        rel != 1 & age > 18 ~ 0.8,
-        TRUE ~ 0.5
-    )) |>
-    group_by(key) |>
-    summarize(m_weight = sum(m_weight))
-
 heis <- heis |>
-    left_join(hh_size, by = "key") |>
     mutate(inc_pc = total_inc / m_weight)
 
 heis <- heis |>
     mutate(province_id = as.factor(substr(key, 2, 3))) |>
     mutate(urban = as.factor(substr(key, 1, 1))) |>
-    mutate(pov_line = if_else(urban == "1", 152406849, 149130135))
+    mutate(pov_line = if_else(urban == "1", 151720617, 151332974))
 
 poverty_gap <- heis |>
     mutate(
@@ -729,26 +686,7 @@ rm(
     poverty_gap
 )
 
-demog <- read_dta("Data/00_demographic.dta")
-living <- read_dta("Data/01_living.dta")
-```
-
-```{r}
-# Calculate total household education
-hh_educations <- demog |>
-    group_by(key) |>
-    summarize(sum_educ = sum(educ, na.rm = TRUE))
-
-# Calculate weighted household memebers
-hh_size <- demog |>
-    select(key, rel, age) |>
-    mutate(m_weight = case_when(
-        rel == 1 ~ 1,
-        rel != 1 & age > 18 ~ 0.8,
-        TRUE ~ 0.5
-    )) |>
-    group_by(key) |>
-    summarize(m_weight = sum(m_weight))
+living <- read_rds("Data/01_living.rds")
 ```
 
 Here we use living standards table to create indices.
@@ -810,9 +748,8 @@ living <- living |>
 ```
 
 ```{r}
-demog_head <- demog |>
-    filter(rel == 1) |>
-    select(key, lit, educ, emp) |>
+heis <- read_rds("Data/03_heis-402.rds")
+demog_head <- heis |>
     mutate(
         # 1 if the HH head is illiterate
         head_illiterate = 1 - lit,
@@ -821,20 +758,17 @@ demog_head <- demog |>
         # 1 if the HH head has less than 12 years of schooling
         head_schooling = if_else(educ < 12, 1, 0)
     ) |>
+    # Calcualte shooling years per capita
+    mutate(educ_pc = sum_educ / m_weight) |>
+    mutate(educ_pc = if_else(educ_pc < 12, 1, 0)) |>
+    select(!c(sum_educ, m_weight)) |>
     select(
         key,
         head_illiterate,
         head_unemployed,
-        head_schooling
-    ) |>
-    # Add educations
-    left_join(hh_educations, by = "key") |>
-    # Add member weights
-    left_join(hh_size, by = "key") |>
-    # Calcualte shooling years per capita
-    mutate(educ_pc = sum_educ / m_weight) |>
-    mutate(educ_pc = if_else(educ_pc <= 12, 1, 0)) |>
-    select(!c(sum_educ, m_weight))
+        head_schooling,
+        educ_pc
+    )
 
 living <- living |>
     left_join(demog_head, by = "key")
@@ -857,23 +791,10 @@ sum(mpi$is_poor) / nrow(mpi)
 
 ```{r}
 heis <- read_rds("Data/03_heis-402.rds")
-demog <- read_dta("Data/00_demographic.dta")
 ```
 
 ```{r}
-# Generate sum of weigths for each household.
-hh_size <- demog |>
-    select(key, rel, age) |>
-    mutate(m_weight = case_when(
-        rel == 1 ~ 1,
-        rel != 1 & age > 18 ~ 0.8,
-        TRUE ~ 0.5
-    )) |>
-    group_by(key) |>
-    summarize(m_weight = sum(m_weight))
-
 heis <- heis |>
-    left_join(hh_size, by = "key") |>
     mutate(total_inc = abs(total_inc)) |>
     mutate(total_expd = abs(total_expd)) |>
     mutate(inc_pc = total_inc / m_weight) |>
@@ -885,11 +806,15 @@ heis <- heis |>
 ```{r}
 # Calculate share of total income held by top 1% of households
 top_1_percent_income_share <- heis |>
-  arrange(desc(total_inc)) |>
-  mutate(cum_income = cumsum(total_inc)) |>
-  summarize(total_income = sum(total_inc),
-            top_1_percent_income = sum(total_inc[1:ceiling(n() * 0.01)])) |>
-  mutate(share_top_1_percent = top_1_percent_income / total_income)
+    arrange(desc(total_inc)) |>
+    mutate(cum_income = cumsum(total_inc)) |>
+    summarize(
+        total_income = sum(total_inc),
+        top_1_percent_income = sum(total_inc[1:ceiling(n() * 0.01)])
+    ) |>
+    mutate(share_top_1_percent = top_1_percent_income / total_income)
+
+top_1_percent_income_share
 ```
 
 ### Gini Coefficient
@@ -897,6 +822,8 @@ top_1_percent_income_share <- heis |>
 ```{r}
 # Calculate Gini coefficient
 gini_coefficient <- Gini(heis$total_inc, unbiased = TRUE)
+
+gini_coefficient
 ```
 
 ## Welfare Data
@@ -906,6 +833,9 @@ welfare <- read_rds("Data/04_welfare-402.rds")
 ```
 
 ### Top 1% Share
+
+I use `expend_1402` which is total expenditures using debit card in 1402 as a
+proxy for income.
 
 ```{r}
 # Calculate share of total income held by top 1% of households
@@ -918,6 +848,8 @@ top_1_percent_income_share <- welfare |>
         top_1_percent_income = sum(expend_1402[1:ceiling(n() * 0.01)])
     ) |>
     mutate(share_top_1_percent = top_1_percent_income / total_income)
+
+top_1_percent_income_share
 ```
 
 ### Gini Coefficient
@@ -925,6 +857,8 @@ top_1_percent_income_share <- welfare |>
 ```{r}
 # Calculate Gini coefficient
 gini_coefficient <- Gini(welfare$expend_1402, unbiased = TRUE)
+
+gini_coefficient
 ```
 
 ## Map Poverty Indicators
@@ -1114,7 +1048,7 @@ hh_size <- demog |>
 
 demog <- demog |>
     filter(rel == 1) |>
-    select(key, urban, rel, age, educ, lit, weight_int) |>
+    select(key, urban, rel, age, educ, emp, lit, weight_int) |>
     left_join(hh_educations, by = "key")
 
 demog <- demog |>
