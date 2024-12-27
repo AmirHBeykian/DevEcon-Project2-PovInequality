@@ -1,0 +1,1228 @@
+---
+title: Project 2 - Poverty and Inequality
+subtitle: Development Economics
+author: Amirhossein Beykian
+date: December 27, 2024
+format:
+    html:
+        toc: true
+        toc_depth: 4
+        toc_float: false 
+        toc-location: left
+        code-fold: false
+        code-tools: true
+        df-print: kable
+        theme:
+            light: flatly
+            dark: darkly
+        grid:
+            margin-width: 350px 
+reference-location: margin      
+citation-location: margin   
+execute: 
+    cache: true
+    fig-width: 16
+    fig-height: 10
+---
+
+```{=html}
+<style type="text/css">
+body {
+  font-size: 20px; /* increase body text size */
+  text-align: justify /* justify text */
+}
+
+h1 { 
+  font-size: 28px; /* increase h1 header size */
+}
+
+code {
+  font-size: 16px; /* increase code chunk size */
+}
+</style>
+```
+
+## Preliminaries
+
+Here we set the working directory and import necessary packages.
+Note that we use the cleaned data files for all analysis below which are
+generated after running the data cleaning process explained in the appendix.
+For further information about how to reproduce the results and run the
+full code, please refer to `README.md` in the root directory of the project.
+
+```{r, message=FALSE, warning=FALSE}
+# Change this on your computer to reproduce the results
+working_dir <- "/home/aloevera/Codes/2_Dev/Project2"
+setwd(working_dir)
+
+# Load libraries
+library("tidyverse") # Used for most of the data manipulations
+library("ggplot2")   # Used for plotting
+library("haven")     # Used for importing .dta file
+library("shiny")     # Used for creating interactive maps
+library("leaflet")   # Used for rendering maps and layers
+library("sf")        # Used for importing and transforming shape files
+library("DescTools") # Used for calculating Gini index
+```
+
+## Absolute Poverty Line
+
+In this section, we want to find the approximate amount of per month
+expenditures that is needed for each person to get 2100 calories minimum required protein
+per day. We use the Ministry of Health recommended food bundle as can be seen in the picture
+below.
+![Bundle](Documents/bundle.jpg)
+
+Note that for each commodity in the bundle, we first need to determine how many units per
+month a person needs, then find the unit price for urban/rural households and then multiply
+quantities and prices and sum over all to get a measure of minimum food expenditures needed.
+
+```{r}
+# Import the food expenditures table that provide us with
+# commodity codes and unit prices
+exp_food <- read_dta("Data/02_exp_food.dta")
+
+# Import demographic information we need to classify
+# urban/rural status of the household
+demog <- read_dta("Data/00_demographic.dta")
+
+# Keep only one rwo for each household (the head)
+demog_head <- demog |>
+    filter(rel == 1) |>
+    select(key, urban, weight_int)
+
+# Add urbanicity of each household to food expenditures table
+exp_food <- exp_food |>
+    left_join(demog_head, by = "key")
+
+# Generate a table which shows the weighted average of price of 
+# each commodity per urbanicity status
+goods_prices <- exp_food |>
+    mutate(price = as.numeric(price)) |>
+    group_by(code, urban) |>
+    summarize(
+        average_price = sum(price * weight_int) / sum(weight_int),
+        .groups = "drop"
+    )
+
+# Take a look at data
+head(goods_prices)
+```
+
+In the code above, we used sample weights in the HEIS data to calculate the
+weighted average price of each commodity that people face per urbanicity status.
+
+Now we look at pages 6-15 of the HEIS questionnaire to find commodity codes we
+are interested in, specifically those in the Ministry of Health food bundle. The
+name and corresponding codes of these goods are defined in the table below for
+later usage.
+
+```{r}
+min_bundle <- tribble(
+    ~food, ~code,
+    "Bread", "011141",
+    "Bread", "011142",
+    "Bread", "011143",
+    "Bread", "011144",
+    "Bread", "011151",
+    "Rice", "011111",
+    "Rice", "011112",
+    "Rice", "011113",
+    "Rice", "011114",
+    "Rice", "011115",
+    "Rice", "011116",
+    "Rice", "011117",
+    "Rice", "011118",
+    "Macaroni", "011164",
+    "Potatoes", "011731",
+    "Lentils", "011768",
+    "Milk", "011411",
+    "Milk", "011411",
+    "Milk", "011412",
+    "Yogurt", "011424",
+    "Yogurt", "011425",
+    "Yogurt", "011426",
+    "Red Meat", "011211",
+    "Red Meat", "011212",
+    "Chicken", "011231",
+    "Chicken", "011232",
+    "Eggs", "011441",
+    "Eggs", "011442",
+    "Cheese", "011428",
+    "Cheese", "011429",
+    "Fruits", "011611",
+    "Fruits", "011612",
+    "Fruits", "011613",
+    "Fruits", "011614",
+    "Fruits", "011615",
+    "Fruits", "011616",
+    "Fruits", "011617",
+    "Fruits", "011618",
+    "Fruits", "011619",
+    "Fruits", "011621",
+    "Fruits", "011631",
+    "Fruits", "011632",
+    "Fruits", "011633",
+    "Fruits", "011634",
+    "Fruits", "011635",
+    "Fruits", "011641",
+    "Fruits", "011642",
+    "Fruits", "011643",
+    "Vegetables", "011713",
+    "Vegetables", "011714",
+    "Oil", "011531",
+    "Oil", "011533",
+    "Sugar", "011812"
+)
+```
+
+In the code below, we define approximate units of each commodity that should be consumed according to food bundle table. Here are the details of each commodity's calculations:
+
+- Bread: Assume the prices we see in the HEIS data is the price per number of
+breads. The food bundle says "8 Kilograms" of bread. Assuming that each loaf of
+bread is 600 Grams, a person must eat approximately 14 loaves of bread per
+month.
+
+- Rice: It seems that the food bundle says "3 Kilograms" per month and the
+prices are also per unit of Kilograms in the data. So we just put 3 for rice.
+
+- Macaroni: The prices in the data are either per Kilograms or per "pack". Either way,
+1 Kg or 1 pack per month is a good approximation.
+
+- Potatoes: This is straightforward as both bundle and data seems to report
+price be per unit of Kilograms.
+
+- Lentils, Yogurt, Red Meat, Chicken, Cheese, and Sugar are also in Kilograms.
+
+- Milk: Assuming the prices in HEIS are per liters of milk, we put 7 as quantity.
+
+- Eggs: Assuming the prices are for a unit of 30 eggs, we set the quantity to
+0.33 to represent 10 eggs per month.
+
+- Fruits: A "60 unit" as mentioned in the Ministry of Health food bundle as
+other dietary recommendations, refers to a serving size. For example, one medium
+apple. An apple is on average 200 Grams, therefore 60 units means about 12
+Kilograms of apples. We can put approximately 12 here to represent 60 units of
+"fruits" per month, assuming the price observed in the data is also per unit of
+Kilogram.
+
+- Vegetables: The similar analysis shows that each "unit" of vegetables is about
+75 Grams. Which then means about 5 Kilograms of vegetable per month.
+
+```{r}
+min_bundle_quant <- tribble(
+    ~food, ~quantity,
+    "Bread", 14,
+    "Rice", 3,
+    "Macaroni", 1,
+    "Potatoes", 1.5,
+    "Lentils", 0.6,
+    "Milk", 7,
+    "Yogurt", 3,
+    "Red Meat", 1.2,
+    "Chicken", 1.5,
+    "Eggs", 0.33,
+    "Cheese", 0.45,
+    "Fruits", 12,
+    "Vegetables", 5,
+    "Oil", 0.9,
+    "Sugar", 1
+)
+```
+
+We then combine the prices and commodity names.
+
+```{r}
+prices <- goods_prices |>
+    left_join(min_bundle, by = "code") |>
+    filter(!is.na(food))
+
+prices <- prices |>
+    group_by(urban, food) |>
+    summarize(price = mean(price), .groups = "drop")
+
+prices |> filter(urban == 1)
+```
+
+```{r}
+prices |> filter(urban == 0)
+```
+
+Tow tables above, show the average price for each good for Urban and Rural areas
+separately. Finally, in the chunk below, we calculate the total expenditures
+needed per month by combining pries and quantities.
+
+```{r}
+min_expnd <- prices |>
+    # Add quantitites
+    left_join(min_bundle_quant, by = "food") |>
+    # Calcualte expenditures
+    mutate(min_expd = price * quantity) |>
+    group_by(urban) |>
+    # Sum over all goods
+    summarize(min_expd = sum(min_expd))
+
+min_expnd
+```
+
+[Rural] 2,019,399,0
+[Urban] 2,072,497,8
+
+Which means the absolute poverty line is about 2 Million Tomans per capita per month.
+
+## Relative Poverty Line
+
+### Traditional Approach
+
+In this subsection, we calculate the relative poverty line by simply sorting per
+capita non-durable expenditures of all households in the data. In the "per capita" part, we
+utilize household member weights 1, 0.8, and 0.5.
+
+```{r}
+# Remvoe unnecessary data and load new ones.
+rm(
+    exp_food,
+    goods_prices,
+    min_bundle,
+    min_bundle_quant,
+    min_expnd,
+    prices,
+    demog_head
+)
+
+heis <- read_rds("Data/03_heis-402.rds")
+demog <- read_dta("Data/00_demographic.dta")
+```
+
+Calculate the weighted household size.
+
+```{r}
+hh_size <- demog |>
+    select(key, rel, age) |>
+    mutate(m_weight = case_when(
+        # If head of household, m_weight = 1
+        rel == 1 ~ 1,
+        # If not head and above 18, m_weight = 0.8
+        rel != 1 & age > 18 ~ 0.8,
+        # If non of them, m_weight = 0.5
+        TRUE ~ 0.5
+    )) |>
+    group_by(key) |>
+    # Sum of the m_weights for each memeber is household's weight
+    summarize(m_weight = sum(m_weight))
+```
+
+```{r}
+# Keep only one row for each household and it's urbainicity
+head_demo <- demog |>
+    filter(rel == 1) |>
+    select(key, urban)
+
+# Add urbanicity status to hh_size table
+heis <- heis |>
+    left_join(hh_size, by = "key") |>
+    # Calculate weighted per capita expenditure
+    mutate(expd_pc = total_expd / m_weight) |>
+    left_join(head_demo, by = "key")
+
+heis |>
+    group_by(urban) |>
+    # Find the median expenditure per capita (weighted)
+    summarize(median_expd = median(expd_pc))
+```
+
+[Rural] 2,793,846,2
+[Urban] 3,864,782,6
+
+```{r}
+heis |>
+    group_by(urban) |>
+    # Find the median expenditure per capita (weighted)
+    summarize(median_expd = quantile(expd_pc, probs = 0.25))
+```
+
+[Rural] 1,396,923,1
+[Urban] 1,932,391,3
+
+### Hybrid Approach
+
+In this subsection, we find the food bundle the poorest people consume, and try to construct the corresponding quantities needed to be consumed in order to produce minimum levels of 
+calories (2100 per day) and protein. 
+
+```{r}
+# Sort by (weighted) per capita income
+heis <- heis |>
+    arrange(expd_pc) |>
+    # Keep non-zero expenditures
+    filter(expd_pc != 0)
+
+# Find the bottom 20% treshold
+tresh <- heis |>
+    group_by(urban) |>
+    summarize(first_quintile = quantile(expd_pc, probs = 0.2))
+
+rur_tresh <- as.numeric(tresh$first_quintile[1])
+urb_tresh <- as.numeric(tresh$first_quintile[2])
+
+# Get the bottom 20% of urban households
+bottom_urban <- heis |>
+    filter(urban == 1, expd_pc < urb_tresh)
+
+# Get the bottom 20% of rural households
+bottom_rural <- heis |>
+    filter(urban == 0, expd_pc < rur_tresh)
+```
+
+We then import food expenditures data and keep only the bottom 20% households.
+
+```{r}
+exp_food <- read_dta("Data/02_exp_food.dta")
+
+exp_food_urban <- exp_food |>
+    filter(key %in% bottom_urban$key)
+
+exp_food_rural <- exp_food |>
+    filter(key %in% bottom_rural$key)
+```
+
+For urban households, this table below shows the top 20 commodities used and by
+how many households in the data.
+
+```{r}
+urban_show <- exp_food_urban |>
+    group_by(code) |>
+    summarize(count = n()) |>
+    arrange(desc(count)) |>
+    slice(1:20)
+
+urban_show
+```
+
+This table shows the calculations used to estimate how many units of each of these
+commodities is needed:
+
+| Food Item               | Calories per Unit (or 100g) | Units per Day (g/ml or units) | Calories per Day | Units per Month (30 days) |
+|-------------------------|-----------------------------|-------------------------------|-----------------|---------------------------|
+| **Potato**              | 77 (100g)                  | 500g                         | 385 kcal        | 15 kg                     |
+| **Tomato**              | 18 (100g)                  | 300g                         | 54 kcal         | 9 kg                      |
+| **Eggs**                | 68 (1 egg)                 | 3 eggs                       | 204 kcal        | 90 eggs                   |
+| **Onion**               | 40 (100g)                  | 200g                         | 80 kcal         | 6 kg                      |
+| **Chicken**             | 165 (100g, breast)         | 200g                         | 330 kcal        | 6 kg                      |
+| **Cucumber**            | 15 (100g)                  | 300g                         | 45 kcal         | 9 kg                      |
+| **Cheese**              | 402 (100g)                 | 50g                          | 201 kcal        | 1.5 kg                    |
+| **Macaroni**            | 370 (100g, cooked)         | 100g                         | 370 kcal        | 3 kg                      |
+| **Vegetables**          | 20 (100g)                  | 300g                         | 60 kcal         | 9 kg                      |
+| **Soft Drink**          | 42 (100ml)                 | 500ml                        | 210 kcal        | 15 liters                 |
+| **Tomato Paste**        | 82 (100g)                  | 100g                         | 82 kcal         | 3 kg                      |
+| **Sugar Cube**          | 16 (1 cube ~4g)            | 6 cubes                      | 96 kcal         | 180 cubes                 |
+| **Oil**                 | 884 (100g)                 | 30g                          | 265 kcal        | 900g                      |
+| **Bread**               | 265 (100g)                 | 300g                         | 795 kcal        | 9 kg                      |
+| **Eggplant**            | 25 (100g)                  | 300g                         | 75 kcal         | 9 kg                      |
+| **Apple**               | 52 (100g, medium apple)    | 200g                         | 104 kcal        | 6 kg                      |
+| **Cheese Puff & Chips**| 550 (100g)                 | 20g                          | 110 kcal        | 600g                      |
+| **Watermelon**          | 30 (100g)                  | 300g                         | 90 kcal         | 9 kg                      |
+| **Salt**                | 0                          | Negligible                   | 0 kcal          | Minimal (few grams)       |
+| **Milk**                | 42 (100ml)                 | 500ml                        | 210 kcal        | 15 liters                 |
+
+We now find these commodities from pages 6-15 of HEIS questionnaire and add quantities.
+
+```{r}
+min_bundle <- tribble(
+    ~code, ~name, ~quantity,
+    "011731", "Potato", 15,
+    "011724", "Tomato", 9,
+    "011441", "Eggs", 90,
+    "011732", "Onion", 6,
+    "011231", "Chicken", 6,
+    "011721", "Cucumber", 9,
+    "011428", "Cheese", 1.5,
+    "011164", "Macaroni", 3,
+    "011713", "Vegetables", 9,
+    "012211", "Soft Drink", 15,
+    "011921", "Tomato Paste", 3,
+    "011811", "Sugar Cube", 180,
+    "011533", "Oil", 0.9,
+    "011151", "Bread", 9,
+    "011723", "Eggplant", 9,
+    "011611", "Apple", 6,
+    "011665", "Cheese Puff and Chips", 0.6,
+    "011642", "Watermelon", 9,
+    "011911", "Salt", 0,
+    "011412", "Milk", 15
+)
+```
+
+Now similar to the Absolute Poverty Line section, we should find prices from the
+data and calculate minimum expenditures.
+
+```{r}
+demog_head <- demog |>
+    filter(rel == 1) |>
+    select(key, urban, weight_int)
+
+exp_food <- exp_food |>
+    left_join(demog_head, by = "key")
+
+goods_prices <- exp_food |>
+    mutate(price = as.numeric(price)) |>
+    filter(urban == 1) |>
+    group_by(code) |>
+    summarize(
+        average_price = sum(price * weight_int) / sum(weight_int),
+        .groups = "drop"
+    )
+```
+
+```{r}
+all_prices <- goods_prices |>
+    left_join(min_bundle, by = "code") |>
+    filter(!is.na(name))
+
+all_prices
+```
+
+```{r}
+min_price_q <- all_prices |>
+    mutate(min_expd = average_price * quantity) |>
+    summarize(min_expd = sum(min_expd))
+
+min_price_q
+```
+
+For rural households, this table below shows the top 20 commodities used and by
+how many households in the data.
+
+```{r}
+rural_show <- exp_food_rural |>
+    group_by(code) |>
+    summarize(count = n()) |>
+    arrange(desc(count)) |>
+    slice(1:20)
+
+rural_show 
+```
+
+We now find these commodities from pages 6-15 of HEIS questionnaire and add quantities and
+use the same calculation for calories above for urban households. The code below shows the 
+differences in the most used food bundles between urban and rural households:
+
+```{r}
+setdiff(urban_show$code, rural_show$code)
+```
+
+```{r}
+setdiff(rural_show$code, urban_show$code)
+```
+
+Tea ("012112") and Solid Oil ("011531") are mostly used in rural areas instead of 
+Apples ("011611") and Cheese Puff and Chips ("011665"). That is the only difference between the food bundles.
+
+```{r}
+min_bundle <- tribble(
+    ~code, ~name, ~quantity,
+    "011731", "Potato", 15,
+    "011724", "Tomato", 9,
+    "011441", "Eggs", 90,
+    "011732", "Onion", 6,
+    "011231", "Chicken", 6,
+    "011721", "Cucumber", 9,
+    "011428", "Cheese", 1.5,
+    "011164", "Macaroni", 3,
+    "011713", "Vegetables", 9,
+    "012211", "Soft Drink", 15,
+    "011921", "Tomato Paste", 3,
+    "011811", "Sugar Cube", 180,
+    "011533", "Oil", 0.9,
+    "011151", "Bread", 9,
+    "011723", "Eggplant", 9,
+    "011531", "Solid Oil", 0.9,
+    "012112", "Tea", 0,
+    "011642", "Watermelon", 9,
+    "011911", "Salt", 0,
+    "011412", "Milk", 15
+)
+```
+
+Now similar to the Absolute Poverty Line section, we should find prices from the
+data and calculate minimum expenditures.
+
+```{r}
+goods_prices <- exp_food |>
+    mutate(price = as.numeric(price)) |>
+    filter(urban == 0) |>
+    group_by(code) |>
+    summarize(
+        average_price = sum(price * weight_int) / sum(weight_int),
+        .groups = "drop"
+    )
+```
+
+```{r}
+all_prices <- goods_prices |>
+    left_join(min_bundle, by = "code") |>
+    filter(!is.na(name))
+
+all_prices
+```
+
+```{r}
+min_price_q <- all_prices |>
+    mutate(min_expd = average_price * quantity) |>
+    summarize(min_expd = sum(min_expd))
+
+min_price_q
+```
+
+## Poverty Gap
+
+```{r}
+rm(
+    all_prices,
+    bottom_rural,
+    bottom_urban,
+    demog,
+    demog_head,
+    exp_food,
+    exp_food_rural,
+    exp_food_urban,
+    goods_prices,
+    head_demo,
+    heis,
+    hh_size,
+    min_bundle,
+    min_bundle_quant,
+    min_price_q,
+    rural_show,
+    urban_show,
+    rur_tresh,
+    urb_tresh,
+    tresh
+)
+
+heis <- read_rds("Data/03_heis-402.rds")
+demog <- read_dta("Data/00_demographic.dta")
+```
+
+In this section, we calculate the poverty gap using the relative poverty line,
+hybrid approach we calculated above. The formula for calculating the Poverty Gap
+Index is given by:
+
+$$
+\text{PGI} = \frac{1}{N} \sum_{j=1}^{q} \left( \frac{z - y_j}{z} \right)
+$$
+
+Where:
+- $N$ is the total population.
+- $q$ is the number of individuals living below the poverty line.
+- $z$ is the poverty line.
+- $y_j$ is the income of individual $j$ who is below the poverty line.
+
+This formula effectively averages the shortfall of income from the poverty line
+across all individuals in poverty. Note that we compare urban households with the
+urban poverty line, and respectively for rural households.
+
+```{r}
+# Generate sum of weigths for each household.
+hh_size <- demog |>
+    select(key, rel, age) |>
+    mutate(m_weight = case_when(
+        rel == 1 ~ 1,
+        rel != 1 & age > 18 ~ 0.8,
+        TRUE ~ 0.5
+    )) |>
+    group_by(key) |>
+    summarize(m_weight = sum(m_weight))
+
+heis <- heis |>
+    left_join(hh_size, by = "key") |>
+    mutate(inc_pc = total_inc / m_weight)
+
+heis <- heis |>
+    mutate(province_id = as.factor(substr(key, 2, 3))) |>
+    mutate(urban = as.factor(substr(key, 1, 1))) |>
+    mutate(pov_line = if_else(urban == "1", 152406849, 149130135))
+
+poverty_gap <- heis |>
+    mutate(
+        pov_gap = if_else(inc_pc < pov_line, (pov_line - inc_pc) / pov_line, 0)
+    ) |>
+    group_by(province_id) |>
+    summarize(
+        pov_gap = mean(pov_gap, na.rm = TRUE)
+    )
+```
+
+We can then find the province names and codes form the metadata to create a more
+informative table.
+
+```{r}
+provinces <- tribble(
+    ~name, ~province_id,
+    "Zanjan", "19",
+    "Yazd", "21",
+    "West Azarbaijan", "04",
+    "Tehran", "23",
+    "Sistan and Baluchistan", "11",
+    "Semnan", "20",
+    "Qom", "25",
+    "Qazvin", "26",
+    "Mazandaran", "02",
+    "Markazi", "00",
+    "Lorestan", "15",
+    "Kurdistan", "12",
+    "Kohgiluyeh and Boyer-Ahmad", "17",
+    "Khuzestan", "06",
+    "South Khorasan", "29",
+    "Razavi Khorasan", "09",
+    "North Khorasan", "28",
+    "Kermanshah", "05",
+    "Kerman", "08",
+    "Ilam", "16",
+    "Hormozgan", "22",
+    "Hamedan", "13",
+    "Golestan", "27",
+    "Gilan", "01",
+    "fars", "07",
+    "Isfahan", "10",
+    "East Azarbaijan", "03",
+    "Chahar Mahaal and Bakhtiari", "14",
+    "Bushehr", "18",
+    "Ardabil", "24",
+    "Alborz", "30"
+) |>
+    mutate(province_id = as.factor(province_id))
+
+poverty_gap <- poverty_gap |>
+    left_join(provinces, by = "province_id")
+
+poverty_gap
+```
+
+## Multidimensional Poverty Index (MPI)
+
+In this section, we calculate Multidimensional Poverty Index (MPI) by defining
+conditions and dimensions by which a household can be considered poor. 
+Here, we have 13 conditions:
+
+1. If number of rooms of a household's home is one, or zero.
+2. If materials of the structure of their home is poor. (wood, and/or mud brick.)
+3. If they do not have TV.
+4. If they do not have a refrigerator and don't have a freezer.
+5. If they have none of the mentioned house appliances in the questionnaire.
+6. If They do not have tap water.
+7. No electricity.
+8. No natural gas.
+9. No bath.
+10. If the household's head is unemployed.
+11. If the household's head is illiterate.
+12. If the household's head has less than 12 years of schooling.
+13. If the weighted household's per capita education is less than or equal to 12 years.
+
+```{r}
+rm(
+    demog,
+    demog_head,
+    heis,
+    hh_educations,
+    hh_size,
+    provinces,
+    poverty_gap
+)
+
+demog <- read_dta("Data/00_demographic.dta")
+living <- read_dta("Data/01_living.dta")
+```
+
+```{r}
+# Calculate total household education
+hh_educations <- demog |>
+    group_by(key) |>
+    summarize(sum_educ = sum(educ, na.rm = TRUE))
+
+# Calculate weighted household memebers
+hh_size <- demog |>
+    select(key, rel, age) |>
+    mutate(m_weight = case_when(
+        rel == 1 ~ 1,
+        rel != 1 & age > 18 ~ 0.8,
+        TRUE ~ 0.5
+    )) |>
+    group_by(key) |>
+    summarize(m_weight = sum(m_weight))
+```
+
+Here we use living standards table to create indices.
+
+```{r}
+living <- living |>
+    select(
+        key,     # Household ID
+        DYCOL03, # Number of rooms
+        DYCOL06, # House Structure
+        DYCOL13, # TV
+        DYCOL17, # Refrigerator or Freezer
+        DYCOL18, # Refrigerator or Freezer
+        DYCOL19, # Refrigerator or Freezer
+        DYCOL29, # Nothing :(
+        DYCOL30, # Tap water
+        DYCOL31, # Electricity
+        DYCOL32, # Natural gas
+        DYCOL35  # Bath
+    ) |>
+    # Reformat all values to be numerical
+    mutate_all(as.numeric) |>
+    mutate(
+        key = as.character(key),
+        # 1 if the household has less than one room
+        one_or_less_rooms = if_else(DYCOL03 <= 1, 1, 0),
+        # 1 if the house structure is poor, in other words
+        # if it is from 05: wood, 06: wood and mudbrick, 07: mudbrick, 08: others
+        poor_structure = if_else(DYCOL06 %in% c(5, 6, 7, 8), 1, 0),
+        # 1 if they have no tv
+        no_tv = if_else(is.na(DYCOL13), 1, 0),
+        # 1 if they have no refrigerator or freezer
+        no_ref_or_freezer = if_else(
+            is.na(DYCOL17) & is.na(DYCOL18) & is.na(DYCOL19), 1, 0
+        ),
+        # Obvious
+        nothing = if_else(is.na(DYCOL29), 0, 1),
+        no_tap_water = if_else(is.na(DYCOL29), 0, 1),
+        no_electricity = if_else(is.na(DYCOL29), 0, 1),
+        no_natural_gas = if_else(is.na(DYCOL32), 1, 0),
+        no_bath = if_else(is.na(DYCOL35), 1, 0),
+    ) |>
+    select(
+        # Remove old columns no longer needed
+        !c(
+            DYCOL03, # Number of rooms
+            DYCOL06, # House Structure
+            DYCOL13, # TV
+            DYCOL17, # Refrigerator
+            DYCOL18, # Refrigerator
+            DYCOL19, # Refrigerator
+            DYCOL29, # Nothing :(
+            DYCOL30, # Tap water
+            DYCOL31, # Electricity
+            DYCOL32, # Natural gas
+            DYCOL35 # Bath
+        )
+    )
+```
+
+```{r}
+demog_head <- demog |>
+    filter(rel == 1) |>
+    select(key, lit, educ, emp) |>
+    mutate(
+        # 1 if the HH head is illiterate
+        head_illiterate = 1 - lit,
+        # 1 if the HH head is unemployed
+        head_unemployed = 1 - emp,
+        # 1 if the HH head has less than 12 years of schooling
+        head_schooling = if_else(educ < 12, 1, 0)
+    ) |>
+    select(
+        key,
+        head_illiterate,
+        head_unemployed,
+        head_schooling
+    ) |>
+    # Add educations
+    left_join(hh_educations, by = "key") |>
+    # Add member weights
+    left_join(hh_size, by = "key") |>
+    # Calcualte shooling years per capita
+    mutate(educ_pc = sum_educ / m_weight) |>
+    mutate(educ_pc = if_else(educ_pc <= 12, 1, 0)) |>
+    select(!c(sum_educ, m_weight))
+
+living <- living |>
+    left_join(demog_head, by = "key")
+```
+
+```{r}
+mpi <- living |>
+    # Here, I use equal weights for all 13 indicators
+    mutate(total_sum = rowSums(select(living, -key), na.rm = TRUE)/13) |>
+    # If the weighted sum is greater than 0.2, assign "poor" to the household
+    mutate(is_poor = if_else(total_sum >= 0.2, 1, 0)) |>
+    select(key, is_poor)
+```
+
+```{r}
+sum(mpi$is_poor) / nrow(mpi)
+```
+
+## HEIS Data
+
+```{r}
+heis <- read_rds("Data/03_heis-402.rds")
+demog <- read_dta("Data/00_demographic.dta")
+```
+
+```{r}
+# Generate sum of weigths for each household.
+hh_size <- demog |>
+    select(key, rel, age) |>
+    mutate(m_weight = case_when(
+        rel == 1 ~ 1,
+        rel != 1 & age > 18 ~ 0.8,
+        TRUE ~ 0.5
+    )) |>
+    group_by(key) |>
+    summarize(m_weight = sum(m_weight))
+
+heis <- heis |>
+    left_join(hh_size, by = "key") |>
+    mutate(total_inc = abs(total_inc)) |>
+    mutate(total_expd = abs(total_expd)) |>
+    mutate(inc_pc = total_inc / m_weight) |>
+    mutate(exp_pc = total_expd / m_weight)
+```
+
+### Top 1% Share
+
+```{r}
+# Calculate share of total income held by top 1% of households
+top_1_percent_income_share <- heis |>
+  arrange(desc(total_inc)) |>
+  mutate(cum_income = cumsum(total_inc)) |>
+  summarize(total_income = sum(total_inc),
+            top_1_percent_income = sum(total_inc[1:ceiling(n() * 0.01)])) |>
+  mutate(share_top_1_percent = top_1_percent_income / total_income)
+```
+
+### Gini Coefficient
+
+```{r}
+# Calculate Gini coefficient
+gini_coefficient <- Gini(heis$total_inc, unbiased = TRUE)
+```
+
+## Welfare Data
+
+```{r}
+welfare <- read_rds("Data/04_welfare-402.rds")
+```
+
+### Top 1% Share
+
+```{r}
+# Calculate share of total income held by top 1% of households
+top_1_percent_income_share <- welfare |>
+    select(expend_1402) |>
+    arrange(desc(expend_1402)) |>
+    mutate(cum_income = cumsum(expend_1402)) |>
+    summarize(
+        total_income = sum(expend_1402),
+        top_1_percent_income = sum(expend_1402[1:ceiling(n() * 0.01)])
+    ) |>
+    mutate(share_top_1_percent = top_1_percent_income / total_income)
+```
+
+### Gini Coefficient
+
+```{r}
+# Calculate Gini coefficient
+gini_coefficient <- Gini(welfare$expend_1402, unbiased = TRUE)
+```
+
+## Map Poverty Indicators
+
+```{r}
+# ohio_pop <- read.csv(file = "Data/ohio_pop.csv")
+# ohio_pop <- as_tibble(ohio_pop) |>
+#     select(name, population) |>
+#     mutate(population = gsub(",", "", population)) |>
+#     mutate(population = as.numeric(population))
+
+iran_shape <- st_read("Data/Iran/iran.shp")
+iran_shape <- st_transform(iran_shape, "+init=epsg:4326")
+# Filter only for Ohio
+
+# Add population to shape file
+# ohioShapesLeaflet <- merge(x = iran_shape, y = ohio_pop, by.x = "namelsad", by.y = "name", all.x = TRUE)
+
+pal <- colorNumeric(
+    palette = "Blues",
+    domain = iran_shape$population
+)
+```
+
+```{r}
+# Define UI for application
+ui <- fluidPage(
+    # Application title
+    titlePanel("Posit 182374"),
+    # Application layout
+    leafletOutput("ohio")
+)
+```
+
+```{r}
+# Define server logic 
+server <- function(input, output, session) {
+    # render the map
+    output$ohio <- renderLeaflet({
+        leaflet() %>%
+            addTiles() %>% 
+            addPolygons(data = iran_shape,
+                        stroke = FALSE,
+                        smoothFactor = 0.2, 
+                        fillOpacity = 1,
+                        color = ~pal(population),
+                        label = ~paste0(Name_12, ": ", population)
+            )
+    })
+}
+```
+
+```{r}
+# Run the application 
+shinyApp(ui = ui, server = server)
+```
+
+## Map Inequality Indicators
+
+## Appendix (Data Cleaning)
+
+### Cleaning the HEIS Data
+
+The following chunk, import all `inc_...` and `exp_...` files from the first step of the
+cleaning process, and combine them to generate `03_heis-402.rds` file containing the total
+income and expenditures for each household in 1402. We use only this file, along with
+`00_demographic.rds`, `01_living.rds`, and `02_exp_food.rds` in the following chunks and
+remove other unnecessary files. Please refer to `README.md` for more details on HEIS data.
+
+```{r}
+# Change this on your computer to reproduce the results
+working_dir <- "/home/aloevera/Codes/2_Dev/Project2"
+setwd(working_dir)
+
+# Load libraries
+library("tidyverse") # Used for most of the data manipulations
+library("haven") # Used for importing .dta file
+# ----------------- Import the Data -------------------
+exp_food <- read_dta("Data/02_exp_food.dta")
+write_rds(exp_food, "Data/02_exp_food.rds")
+exp_housing <- read_dta("Data/exp_housing.dta")
+exp_other <- read_dta("Data/exp_other.dta")
+inc_free <- read_dta("Data/inc_free.dta")
+inc_salary <- read_dta("Data/inc_salary.dta")
+inc_other <- read_dta("Data/inc_other.dta")
+inc_transfers <- read_dta("Data/inc_transfers.dta")
+
+# Get total expenditures on food for each household
+exp_food <- exp_food |>
+    group_by(key) |>
+    summarize(expd = sum(expd))
+
+# Generate Total Expenditures data frame.
+total_exp <- left_join(
+    # Add housing expenditures
+    exp_food, exp_housing,
+    by = "key", suffix = c("_food", "_housing")
+) |>
+    # Add "other" expenditures
+    left_join(exp_other, by = "key") |>
+    rename(expd_other = expd)
+
+# Incomes from "free" sources
+inc_free <- inc_free |>
+    group_by(key) |>
+    summarize(inc = sum(net_inc))
+
+# Salary incomes
+inc_salary <- inc_salary |>
+    group_by(key) |>
+    summarize(inc = sum(net_inc))
+
+# Government transfers (e.g. subsidies)
+inc_transfers <- inc_transfers |>
+    group_by(key) |>
+    summarize(inc = sum(net_inc))
+
+# Generate Total Incomes data frame
+total_inc <- left_join(
+    inc_free, inc_salary,
+    by = "key", suffix = c("_free", "_salary")
+) |>
+    left_join(inc_transfers, by = "key") |>
+    rename(inc_transfers = inc) |>
+    left_join(inc_other, by = "key") |>
+    rename(inc_other = net_inc)
+
+# Generate HEIS dataframe containig income and expenditures for each household
+heis <- left_join(
+    total_inc,
+    total_exp,
+    by = "key"
+) |>
+    mutate(across(everything(), ~ ifelse(is.na(.), 0, .))) |>
+    mutate(
+        total_inc = inc_free + inc_salary + inc_transfers + inc_other,
+        total_expd = expd_food + expd_housing + expd_other
+    ) |>
+    select(c(key, total_inc, total_expd))
+
+# Remove unnecessary data files
+file.remove("Data/exp_housing.dta")
+file.remove("Data/exp_other.dta")
+file.remove("Data/inc_free.dta")
+file.remove("Data/inc_other.dta")
+file.remove("Data/inc_salary.dta")
+file.remove("Data/inc_transfers.dta")
+
+living <- read_dta("Data/01_living.dta")
+living <- living |>
+    select(
+        key, # Household ID
+        DYCOL03, # Number of rooms
+        DYCOL06, # House Structure
+        DYCOL13, # TV
+        DYCOL17, # Refrigerator or Freezer
+        DYCOL18, # Refrigerator or Freezer
+        DYCOL19, # Refrigerator or Freezer
+        DYCOL29, # Nothing :(
+        DYCOL30, # Tap water
+        DYCOL31, # Electricity
+        DYCOL32, # Natural gas
+        DYCOL35 # Bath
+    )
+write_rds(living, "Data/01_living.rds")
+file.remove("Data/01_living.dta")
+
+demog <- read_dta("Data/00_demographic.dta")
+
+hh_educations <- demog |>
+    group_by(key) |>
+    summarize(sum_educ = sum(educ, na.rm = TRUE))
+
+hh_size <- demog |>
+    select(key, rel, age) |>
+    mutate(m_weight = case_when(
+        # If head of household, m_weight = 1
+        rel == 1 ~ 1,
+        # If not head and above 18, m_weight = 0.8
+        rel != 1 & age > 18 ~ 0.8,
+        # If non of them, m_weight = 0.5
+        TRUE ~ 0.5
+    )) |>
+    group_by(key) |>
+    # Sum of the m_weights for each memeber is household's weight
+    summarize(m_weight = sum(m_weight))
+
+demog <- demog |>
+    filter(rel == 1) |>
+    select(key, urban, rel, age, educ, lit, weight_int) |>
+    left_join(hh_educations, by = "key")
+
+demog <- demog |>
+    left_join(hh_size, by = "key")
+
+heis <- heis |>
+    left_join(demog, by = "key")
+
+# Save the output HEIS dataset for later usage
+write_rds(heis, file = "Data/03_heis-402.rds")
+
+file.remove("Data/00_demographic.dta")
+file.remove("Data/02_exp_food.dta")
+
+# Also remove from memory
+rm(
+    exp_food,
+    exp_housing,
+    exp_other,
+    inc_free,
+    inc_other,
+    inc_salary,
+    inc_transfers,
+    total_exp,
+    total_inc
+)
+```
+
+### Cleaning the Welfare Data
+
+```{r}
+# ----------------- Import the Data -------------------
+welfare <- as_tibble(read.csv("Data/welfare-402.csv"))
+
+welfare <- welfare |>
+    mutate(
+        # Combine two similar "Komite Satus" columns
+        # Set to 1 if either is 1
+        komite = IsKomite_AfzayeshMostamari + IsKomite_AfzayeshMostamariSayer,
+    ) |>
+    select(!c(IsKomite_AfzayeshMostamari, IsKomite_AfzayeshMostamariSayer)) |>
+    # Rename all columns to shorter and better names
+    rename(
+        key = id,
+        head_key = Parent_Id,
+        gender = GenderId,
+        age = Age,
+        urban = isurban,
+        has_special_disease = ISBimarKhas,
+        disabled = IsMalool,
+        disability = Malool_shedat,
+        postal_code = Dashboard_postalcode7Digits,
+        province = SabteAhval_provincename,
+        county = SabteAhval_countyname,
+        malnutrition = Has_SoeTaghzie,
+        behzisti = IsBehzisti_AfzayeshMostamari,
+        non_air_non_pil = TripCountNonAirNonPilgrimage_95to99,
+        non_air_pil = TripCountNonAirPilgrimage_95to99,
+        air_non_pil = TripCountAirNonPilgrimage_95to99,
+        air_pil = TripCountAirPilgrimage_95to99,
+        saham_edalat = Has_Saham_Edalat,
+        decile = Decile,
+        percentile = Percentile,
+        business_permit = HasMojavezSenfi,
+        gov_employee = ISKarmanddolat_1402,
+        retired = IsRetired_Asli,
+        retired_dep = IsRetired_Tabaie,
+        health_insurance = is_bime_darman,
+        insuree = IsBimePardaz,
+        beginning_1399 = MandehAval_1399,
+        end_1399 = MandehAkhar_1399,
+        beginning_1400 = MandehAval_1400,
+        end_1400 = MandehAkhar_1400,
+        deposit_1400 = Variz_1400,
+        expend_1398 = CardPerMonth_1398,
+        expend_1399 = CardPerMonth_1399,
+        expend_1400 = CardPerMonth_1400,
+        expend_1401 = CardPerMonth_1401,
+        expend_1402 = CardPerMonth_1402,
+        turn_card_transfer_1401 = CardBeCardPerMonth_1401,
+        turn_card_transfer_1402 = CardBeCardPerMonth_1402,
+        turn_paya_1401 = PayaPerMonth_1401,
+        turn_paya_1402 = PayaPerMonth_1402,
+        turn_satna_1401 = SatnaPerMonth_1401,
+        turn_satna_1402 = SatnaPerMonth_1402,
+        cars_count = CarsCount,
+        cars_price = CarsPrice,
+        stock = Bourse_NetPortfoValue,
+        income = Daramad
+    )
+```
+
+The table below shows that many columns of the Welfare dataset have more than 90% null
+values and therefore are not reliable. We should take this into account in later analyses.
+
+```{r}
+# Check the percent of each column that is null
+nas <- welfare |>
+    summarise(across(everything(), ~ sum(is.na(.))/nrow(welfare))) |>
+    pivot_longer(cols = everything(), names_to = "variable", values_to = "% of NAs")
+
+welfare <- welfare |>
+    select(expend_1402, province)
+
+# Save the output Welfare dataset for later usage
+write_rds(welfare, file = "Data/04_welfare-402.rds")
+
+# Remove from memory
+rm(heis, welfare)
+```
+
